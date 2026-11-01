@@ -7,6 +7,8 @@ Identifies and analyzes HTML form fields for potential vulnerabilities such as m
 ## Usage
 `./vscan-form-field-analyzer [params]`
 
+Field records carry the field name, its type, and whether a value was present. Input value attributes are never printed or saved. If a fetched page has no forms, the tool prints that no forms were found to analyze and exits with status 1. A failed fetch also exits with status 1.
+
 ## Parameters
 - `-h`: Show help message and exit
 - `-o`: No description provided

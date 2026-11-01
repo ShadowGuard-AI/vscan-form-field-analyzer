@@ -29,7 +29,8 @@ def analyze_form_fields(html_content, url):
 
     Returns:
         list: A list of dictionaries, where each dictionary represents a form field
-              and its potential vulnerabilities.  Returns an empty list if no forms are found.
+              and its potential vulnerabilities.  Returns None if no forms are found.
+              A field record carries whether a value was present, never the value itself.
     """
 
     soup = BeautifulSoup(html_content, 'html.parser')
@@ -38,10 +39,11 @@ def analyze_form_fields(html_content, url):
 
     if not forms:
         logging.warning(f"No forms found on {url}")
-        return results
+        return None
 
     for form in forms:
         for input_field in form.find_all('input'):
+            field_value = input_field.get('value')
             field_data = {
                 'name': input_field.get('name', 'N/A'),
                 'type': input_field.get('type', 'text'),  # Default to 'text' if no type is specified
@@ -49,15 +51,15 @@ def analyze_form_fields(html_content, url):
                 'required': input_field.has_attr('required'),
                 'readonly': input_field.has_attr('readonly'),
                 'disabled': input_field.has_attr('disabled'),
-                'value': input_field.get('value', 'N/A'),
+                'value_present': input_field.has_attr('value'),
                 'placeholder': input_field.get('placeholder', 'N/A'),
                 'vulnerabilities': []
             }
 
             # Check for missing input validation (simple regex for email/number)
-            if field_data['type'] == 'email' and field_data['value'] != 'N/A' and not re.match(r"[^@]+@[^@]+\.[^@]+", field_data['value']):
+            if field_data['type'] == 'email' and field_value is not None and not re.match(r"[^@]+@[^@]+\.[^@]+", field_value):
                 field_data['vulnerabilities'].append("Potential missing email validation.")
-            elif field_data['type'] in ('number', 'tel') and field_data['value'] != 'N/A' and not field_data['value'].isdigit():
+            elif field_data['type'] in ('number', 'tel') and field_value is not None and not field_value.isdigit():
                 field_data['vulnerabilities'].append("Potential missing numerical validation.")
 
             # Check for autocomplete enabled on sensitive fields
@@ -132,6 +134,10 @@ def main():
     if html_content:
         results = analyze_form_fields(html_content, args.url)
 
+        if results is None:
+            print("No forms were found to analyze.")
+            sys.exit(1)
+
         if results:
             print("Form field analysis results:")
             for field in results:
@@ -139,6 +145,7 @@ def main():
                 print(f"    Type: {field['type']}")
                 print(f"    Autocomplete: {field['autocomplete']}")
                 print(f"    Required: {field['required']}")
+                print(f"    Value Present: {field['value_present']}")
                 print(f"    Vulnerabilities: {field['vulnerabilities'] or 'None'}")
                 print("-" * 20)
 
@@ -149,6 +156,7 @@ def main():
 
     else:
         print("Failed to fetch HTML content. Check the URL and your network connection.")
+        sys.exit(1)
 
 
 
