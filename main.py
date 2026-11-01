@@ -42,11 +42,16 @@ def analyze_form_fields(html_content, url):
         return None
 
     for form in forms:
+        # Only input elements are walked. Selects, textareas, and buttons never appear in my
+        # results, so a form built out of those reads as a form holding no fields at all.
         for input_field in form.find_all('input'):
             field_value = input_field.get('value')
             field_data = {
                 'name': input_field.get('name', 'N/A'),
                 'type': input_field.get('type', 'text'),  # Default to 'text' if no type is specified
+                # A missing autocomplete attribute is recorded as off in this dict, but browsers treat a
+                # missing attribute as on. The sensitive field with nothing set, the one most at risk,
+                # reads as safe in my report because of this default.
                 'autocomplete': input_field.get('autocomplete', 'off'), # Default to 'off' if not specified
                 'required': input_field.has_attr('required'),
                 'readonly': input_field.has_attr('readonly'),
@@ -57,12 +62,18 @@ def analyze_form_fields(html_content, url):
             }
 
             # Check for missing input validation (simple regex for email/number)
+            # Validation is judged by testing the prefilled value in the static HTML. An empty field
+            # backed by real checks and a prefilled field with none behind it score the wrong way round,
+            # and maxlength, pattern, min, and max are never looked at at all.
             if field_data['type'] == 'email' and field_value is not None and not re.match(r"[^@]+@[^@]+\.[^@]+", field_value):
                 field_data['vulnerabilities'].append("Potential missing email validation.")
             elif field_data['type'] in ('number', 'tel') and field_value is not None and not field_value.isdigit():
                 field_data['vulnerabilities'].append("Potential missing numerical validation.")
 
             # Check for autocomplete enabled on sensitive fields
+            # credit-card and cvv are autocomplete tokens, not input types a browser emits, so those
+            # two branches wait for values real forms never carry. A card field typed as plain text
+            # goes unchecked, and a password field set to new-password, the correct value, is flagged.
             if field_data['type'] in ('password', 'credit-card', 'cvv') and field_data['autocomplete'] != 'off':
                 field_data['vulnerabilities'].append(f"Autocomplete is enabled for sensitive field of type '{field_data['type']}'.  This is generally discouraged")
 
