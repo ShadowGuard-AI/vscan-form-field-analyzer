@@ -42,17 +42,29 @@ def analyze_form_fields(html_content, url):
         return None
 
     for form in forms:
-        # Only input elements are walked. Selects, textareas, and buttons never appear in my
-        # results, so a form built out of those reads as a form holding no fields at all.
-        for input_field in form.find_all('input'):
+        # Inputs, selects, and textareas are all walked, so a form built
+        # out of selects or textareas no longer reads as a form holding
+        # no fields at all. For a select or textarea the tag name is
+        # recorded as the field type.
+        fields = form.find_all(['input', 'select', 'textarea'])
+        for input_field in fields:
             field_value = input_field.get('value')
+            if input_field.name in ('select', 'textarea'):
+                field_type = input_field.name
+            else:
+                # HTML type values are case-insensitive; normalise so an
+                # upper case PASSWORD is still treated as a password.
+                field_type = (input_field.get('type', 'text') or 'text').lower()
+            raw_autocomplete = input_field.get('autocomplete')
+            # A missing autocomplete attribute is recorded as "not set",
+            # not as "off": browsers apply their default behaviour when
+            # the attribute is absent, so recording "off" made the most
+            # exposed sensitive fields read as safe.
+            autocomplete = raw_autocomplete.strip().lower() if raw_autocomplete else 'not set'
             field_data = {
                 'name': input_field.get('name', 'N/A'),
-                'type': input_field.get('type', 'text'),  # Default to 'text' if no type is specified
-                # A missing autocomplete attribute is recorded as off in this dict, but browsers treat a
-                # missing attribute as on. The sensitive field with nothing set, the one most at risk,
-                # reads as safe in my report because of this default.
-                'autocomplete': input_field.get('autocomplete', 'off'), # Default to 'off' if not specified
+                'type': field_type,
+                'autocomplete': autocomplete,
                 'required': input_field.has_attr('required'),
                 'readonly': input_field.has_attr('readonly'),
                 'disabled': input_field.has_attr('disabled'),
@@ -61,21 +73,33 @@ def analyze_form_fields(html_content, url):
                 'vulnerabilities': []
             }
 
-            # Check for missing input validation (simple regex for email/number)
-            # Validation is judged by testing the prefilled value in the static HTML. An empty field
-            # backed by real checks and a prefilled field with none behind it score the wrong way round,
-            # and maxlength, pattern, min, and max are never looked at at all.
-            if field_data['type'] == 'email' and field_value is not None and not re.match(r"[^@]+@[^@]+\.[^@]+", field_value):
-                field_data['vulnerabilities'].append("Potential missing email validation.")
-            elif field_data['type'] in ('number', 'tel') and field_value is not None and not field_value.isdigit():
-                field_data['vulnerabilities'].append("Potential missing numerical validation.")
+            # Check for missing input validation. A prefilled value that
+            # fails the field's own format is only flagged when the field
+            # also carries no validation attributes (pattern, maxlength,
+            # min, max, step) that would catch it, so a field backed by
+            # real checks is no longer scored the wrong way round.
+            validation_attrs = ('pattern', 'maxlength', 'min', 'max', 'step')
+            has_validation = any(input_field.has_attr(attr) for attr in validation_attrs)
+            if not has_validation and field_value is not None:
+                if field_type == 'email' and not re.match(r"[^@]+@[^@]+\.[^@]+", field_value):
+                    field_data['vulnerabilities'].append("Potential missing email validation.")
+                elif field_type in ('number', 'tel') and not field_value.isdigit():
+                    field_data['vulnerabilities'].append("Potential missing numerical validation.")
 
-            # Check for autocomplete enabled on sensitive fields
-            # credit-card and cvv are autocomplete tokens, not input types a browser emits, so those
-            # two branches wait for values real forms never carry. A card field typed as plain text
-            # goes unchecked, and a password field set to new-password, the correct value, is flagged.
-            if field_data['type'] in ('password', 'credit-card', 'cvv') and field_data['autocomplete'] != 'off':
-                field_data['vulnerabilities'].append(f"Autocomplete is enabled for sensitive field of type '{field_data['type']}'.  This is generally discouraged")
+            # Check for autocomplete enabled on sensitive fields.
+            # credit-card and cvv are autocomplete tokens (cc-number and
+            # cc-csc), not input types, so card fields are detected by
+            # their autocomplete token even when typed as plain text.
+            # For password fields, the correct tokens new-password and
+            # current-password are not flagged; a password field is
+            # flagged when autocomplete is "on" or not set at all.
+            ac_tokens = autocomplete.split()
+            if field_type == 'password':
+                if autocomplete not in ('off', 'new-password', 'current-password'):
+                    field_data['vulnerabilities'].append("Autocomplete is enabled or not set for sensitive field of type 'password'. This is generally discouraged")
+            elif 'cc-number' in ac_tokens or 'cc-csc' in ac_tokens or field_type in ('credit-card', 'cvv'):
+                if autocomplete != 'off':
+                    field_data['vulnerabilities'].append(f"Autocomplete is enabled for sensitive card field '{field_data['name']}'. This is generally discouraged")
 
             # Check for missing required attribute
             if field_data['type'] not in ('hidden', 'submit', 'button') and not field_data['required']:
@@ -101,7 +125,12 @@ def fetch_html_content(url):
     """
     try:
         response = requests.get(url, timeout=10)
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        # An HTTP error status is not a fetch failure: the body of an
+        # error page can still hold forms worth analysing, so it is
+        # returned whatever the status. None is reserved for a request
+        # that produced no response.
+        if response.status_code >= 400:
+            logging.warning(f"URL {url} returned HTTP {response.status_code}; analysing the response body anyway.")
         return response.text
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching URL {url}: {e}")
@@ -163,7 +192,7 @@ def main():
             if args.output:
                 save_results(results, args.output)
         else:
-            print("No vulnerable form fields found.")
+            print("Forms were found on the page, but they contained no input, select, or textarea fields.")
 
     else:
         print("Failed to fetch HTML content. Check the URL and your network connection.")
